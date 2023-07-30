@@ -257,6 +257,24 @@ export class Multicall {
   }
 
   /**
+   * Call all the contract sends in 1
+   * @param calls The calls
+   */
+  public async send(
+      contractCallContexts: ContractCallContext[] | ContractCallContext,
+      contractSendOptions: ContractCallOptions
+  ) {
+    if (!Array.isArray(contractCallContexts)) {
+      contractCallContexts = [contractCallContexts];
+    }
+
+    return await this.executeSend(
+        this.buildAggregateCallContext(contractCallContexts),
+        contractSendOptions
+    );
+  }
+
+  /**
    * Get return data from result
    * @param result The result
    */
@@ -367,6 +385,60 @@ export class Multicall {
       default:
         throw new Error(`${this._executionType} is not defined`);
     }
+  }
+
+  private static async signSendTx(web3: any, contractAddress: string, sendParams:any , data: any) {
+    const nonce = await web3.eth.getTransactionCount(sendParams.from);
+    const rawTransaction = {
+      to: contractAddress,
+      nonce,
+      data,
+      ...sendParams
+    }
+    const signed = await web3.eth.accounts.signTransaction(rawTransaction, web3.eth.accounts.wallet[0].privateKey);
+    return await web3.eth.sendSignedTransaction(signed.rawTransaction);
+  }
+
+  /**
+   * Execute the multicall contract send
+   * @param calls The calls
+   */
+  private async executeSend(
+      calls: AggregateCallContext[],
+      options: ContractCallOptions
+  ): Promise<AggregateResponse> {
+    switch (this._executionType) {
+      case ExecutionType.web3:
+        return await this.executeSendWithWeb3(calls, options);
+      default:
+        throw new Error(`${this._executionType} is not defined`);
+    }
+  }
+
+
+  /**
+   * Execute aggregate with web3 instance
+   * @param calls The calls context
+   * @param sendParams
+   */
+  private async executeSendWithWeb3(
+      calls: AggregateCallContext[],
+      sendParams: {}
+  ): Promise<AggregateResponse> {
+    const web3 = this.getTypedOptions<MulticallOptionsWeb3>().web3Instance;
+    const networkId = await web3.eth.net.getId();
+    const contractAddress = this.getContractBasedOnNetwork(networkId);
+    const contract = new web3.eth.Contract(
+        Multicall.ABI,
+        contractAddress
+    );
+    let data;
+    if (this._options.tryAggregate) {
+      data = (await contract.methods.tryBlockAndAggregate(false, this.mapCallContextToMatchContractFormat(calls)).encodeABI());
+    } else {
+      data = (await contract.methods.aggregate(this.mapCallContextToMatchContractFormat(calls)).encodeABI());
+    }
+    return await Multicall.signSendTx(web3, contractAddress, sendParams, data)
   }
 
   /**
@@ -545,7 +617,7 @@ export class Multicall {
       return this._options.multicallCustomContractAddress;
     }
 
-    switch (network) {
+    switch (Number(network)) {
       case Networks.mainnet:
       case Networks.ropsten:
       case Networks.rinkeby:
